@@ -9,6 +9,9 @@
     pop(allocate(0x20))
     let x := allocate(0x40)
     mstore(array_index_access(x, 3), 2)
+    if 0 {
+        mstore(0x40, 0x20)
+    }
 }
 // ----
 // fullSuite
