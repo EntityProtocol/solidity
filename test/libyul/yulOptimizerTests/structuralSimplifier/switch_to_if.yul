@@ -4,7 +4,7 @@
 // ----
 // structuralSimplifier
 // {
-//     if eq(1, 2)
+//     if eq(2, 1)
 //     {
 //         mstore(0, 0)
 //     }

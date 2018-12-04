@@ -17,30 +17,33 @@
 #pragma once
 
 #include <libyul/optimiser/ASTWalker.h>
+#include <libyul/optimiser/DataFlowAnalyzer.h>
 
 namespace yul
 {
 
 /**
  * Structural simplifier. Performs the following simplification steps:
- * - remove if with empty body and movable condition
- * - replace if with empty body and non-movable condition with pop(condition)
- * - remove if with true condition (replace with body)
+ * - replace if with empty body with pop(condition)
+ * - replace if with true condition with its body
  * - remove if with false condition
  * - turn switch with single case into if
  * - replace switch with only default case with pop(expression) and body
  * - remove for with false condition
  *
  * Prerequisites: Disambiguator
+ *
+ * Important: Can only be used on EVM code.
  */
-class StructuralSimplifier: public ASTModifier
+class StructuralSimplifier: public DataFlowAnalyzer
 {
 public:
-	using ASTModifier::operator();
+	using DataFlowAnalyzer::operator();
 	void operator()(Block& _block) override;
 private:
-	static bool isTrue(Literal const& _literal);
-	static bool isFalse(Literal const& _literal);
+	void simplify(std::vector<Statement>& _statements);
+	bool expressionAlwaysTrue(Expression const &_expression);
+	bool expressionAlwaysFalse(Expression const &_expression);
 };
 
 }

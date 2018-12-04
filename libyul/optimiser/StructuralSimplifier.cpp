@@ -16,106 +16,122 @@
 */
 #include <libyul/optimiser/StructuralSimplifier.h>
 #include <libyul/optimiser/Semantics.h>
+#include <libyul/optimiser/Utilities.h>
 #include <libyul/AsmData.h>
 #include <libdevcore/CommonData.h>
+#include <libdevcore/Visitor.h>
 
 using namespace std;
 using namespace dev;
 using namespace yul;
 
+namespace {
+
+ExpressionStatement makePopExpressionStatement(langutil::SourceLocation const& _location, Expression _expression)
+{
+	return {_location, FunctionalInstruction{
+		_location,
+		solidity::Instruction::POP,
+		{std::move(_expression)}
+	}};
+}
+
+}
+
 void StructuralSimplifier::operator()(Block& _block)
 {
+	pushScope(false);
+	simplify(_block.statements);
+	popScope();
+}
+
+void StructuralSimplifier::simplify(std::vector<yul::Statement> &_statements)
+{
+	GenericFallbackReturnsVisitor<boost::optional<vector<Statement>>, If, Switch, ForLoop> const visitor(
+		[&](If& _ifStmt) -> boost::optional<vector<Statement>> {
+			if (_ifStmt.body.statements.empty())
+				return {{makePopExpressionStatement(_ifStmt.location, std::move(*_ifStmt.condition))}};
+			if (expressionAlwaysTrue(*_ifStmt.condition))
+				return {std::move(_ifStmt.body.statements)};
+			else if (expressionAlwaysFalse(*_ifStmt.condition))
+				return {{}};
+			return {};
+		},
+		[](Switch& _switchStmt) -> boost::optional<vector<Statement>> {
+			if (_switchStmt.cases.size() == 1)
+			{
+				auto& switchCase = _switchStmt.cases.front();
+				auto loc = locationOf(*_switchStmt.expression);
+				if (switchCase.value)
+					return {{If{
+						std::move(_switchStmt.location),
+						make_shared<Expression>(FunctionalInstruction{
+								std::move(loc),
+								solidity::Instruction::EQ,
+								{std::move(*switchCase.value), std::move(*_switchStmt.expression)}
+						}), std::move(switchCase.body)}}};
+				else
+					return {{
+						makePopExpressionStatement(loc, std::move(*_switchStmt.expression)),
+						std::move(switchCase.body)
+					}};
+			}
+			else
+				return {};
+		},
+		[&](ForLoop& _forLoop) -> boost::optional<vector<Statement>> {
+			if (expressionAlwaysFalse(*_forLoop.condition))
+				return {std::move(_forLoop.pre.statements)};
+			else
+				return {};
+		}
+	);
+
 	iterateReplacing(
-		_block.statements,
+		_statements,
 		[&](Statement& _stmt) -> boost::optional<vector<Statement>>
 		{
-			if (_stmt.type() == typeid(If))
-			{
-				auto& ifStmt = boost::get<If>(_stmt);
-				if (ifStmt.body.statements.empty())
-				{
-					if (MovableChecker(*ifStmt.condition).movable())
-						return {{}};
-					else
-						return {{ExpressionStatement{ifStmt.location, FunctionalInstruction{
-							ifStmt.location,
-							solidity::Instruction::POP,
-							{std::move(*ifStmt.condition)}
-						}}}};
-				}
-				if (ifStmt.condition->type() == typeid(Literal))
-				{
-					auto const& condition = boost::get<Literal>(*ifStmt.condition);
-					if (isTrue(condition))
-					{
-						(*this)(ifStmt.body);
-						return {std::move(ifStmt.body.statements)};
-					}
-					else if (isFalse(condition))
-						return {{}};
-				}
-			}
-			else if (_stmt.type() == typeid(Switch))
-			{
-				auto& switchStmt = boost::get<Switch>(_stmt);
-				if (switchStmt.cases.size() == 1)
-				{
-					auto& switchCase = switchStmt.cases.front();
-					(*this)(switchCase.body);
-					if (switchCase.value)
-						return {{If{
-							std::move(switchStmt.location),
-							make_shared<Expression>(
-								FunctionalInstruction{
-									locationOf(*switchStmt.expression),
-									solidity::Instruction::EQ,
-									{*switchStmt.expression, std::move(*switchCase.value)}
-								}
-						), std::move(switchCase.body)}}};
-					else
-						return {{ExpressionStatement{
-										locationOf(*switchStmt.expression),
-										FunctionalInstruction{
-											locationOf(*switchStmt.expression),
-											solidity::Instruction::POP,
-											{*switchStmt.expression}
-										}
-						}, std::move(switchCase.body)}};
-				}
-			}
-			else if (_stmt.type() == typeid(ForLoop))
-			{
-				auto& forLoop = boost::get<ForLoop>(_stmt);
-				if (
-					forLoop.condition->type() == typeid(Literal) &&
-					isFalse(boost::get<Literal>(*forLoop.condition))
-				)
-				{
-					for (auto& stmt: forLoop.pre.statements)
-						visit(stmt);
-					return {std::move(forLoop.pre.statements)};
-				}
-			}
 			visit(_stmt);
-			return {};
+			auto result = boost::apply_visitor(visitor, _stmt);
+			if (result.is_initialized())
+				simplify(*result);
+			return result;
 		}
 	);
 }
 
-bool StructuralSimplifier::isTrue(Literal const& _literal)
+bool StructuralSimplifier::expressionAlwaysTrue(Expression const &_expression)
 {
-	static YulString const trueString("true");
-	return
-		(_literal.kind == LiteralKind::Boolean && _literal.value == trueString) ||
-		(_literal.kind == LiteralKind::Number && u256(_literal.value.str()) != u256(0))
-	;
+	return boost::apply_visitor(GenericFallbackReturnsVisitor<bool, Identifier const, Literal const>(
+		[&](Identifier const& _identifier) -> bool {
+			if (auto expr = m_value[_identifier.name])
+				return expressionAlwaysTrue(*expr);
+			return false;
+		},
+		[](Literal const& _literal) -> bool {
+			static YulString const trueString("true");
+			return
+				(_literal.kind == LiteralKind::Boolean && _literal.value == trueString) ||
+				(_literal.kind == LiteralKind::Number && valueOfNumberLiteral(_literal) != u256(0))
+			;
+		}
+	), _expression);
 }
 
-bool StructuralSimplifier::isFalse(Literal const& _literal)
+bool StructuralSimplifier::expressionAlwaysFalse(Expression const &_expression)
 {
-	static YulString const falseString("false");
-	return
-		(_literal.kind == LiteralKind::Boolean && _literal.value == falseString) ||
-		(_literal.kind == LiteralKind::Number && u256(_literal.value.str()) == u256(0))
-	;
+	return boost::apply_visitor(GenericFallbackReturnsVisitor<bool, Identifier const, Literal const>(
+		[&](Identifier const& _identifier) -> bool {
+			if (auto expr = m_value[_identifier.name])
+				return expressionAlwaysFalse(*expr);
+			return false;
+		},
+		[](Literal const& _literal) -> bool {
+			static YulString const falseString("false");
+			return
+				(_literal.kind == LiteralKind::Boolean && _literal.value == falseString) ||
+				(_literal.kind == LiteralKind::Number && valueOfNumberLiteral(_literal) == u256(0))
+			;
+		}
+	), _expression);
 }
