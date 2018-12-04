@@ -49,7 +49,7 @@ void StructuralSimplifier::operator()(Block& _block)
 					if (isTrue(condition))
 					{
 						(*this)(ifStmt.body);
-						return {{std::move(ifStmt.body.statements)}};
+						return {std::move(ifStmt.body.statements)};
 					}
 					else if (isFalse(condition))
 						return {{}};
@@ -93,7 +93,7 @@ void StructuralSimplifier::operator()(Block& _block)
 				{
 					for (auto& stmt: forLoop.pre.statements)
 						visit(stmt);
-					return {{std::move(forLoop.pre.statements)}};
+					return {std::move(forLoop.pre.statements)};
 				}
 			}
 			visit(_stmt);
