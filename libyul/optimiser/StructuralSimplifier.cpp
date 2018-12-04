@@ -47,7 +47,10 @@ void StructuralSimplifier::operator()(Block& _block)
 				{
 					auto const& condition = boost::get<Literal>(*ifStmt.condition);
 					if (isTrue(condition))
+					{
+						(*this)(ifStmt.body);
 						return {{std::move(ifStmt.body.statements)}};
+					}
 					else if (isFalse(condition))
 						return {{}};
 				}
@@ -58,6 +61,7 @@ void StructuralSimplifier::operator()(Block& _block)
 				if (switchStmt.cases.size() == 1)
 				{
 					auto& switchCase = switchStmt.cases.front();
+					(*this)(switchCase.body);
 					if (switchCase.value)
 						return {{If{
 							std::move(switchStmt.location),
@@ -86,10 +90,13 @@ void StructuralSimplifier::operator()(Block& _block)
 					forLoop.condition->type() == typeid(Literal) &&
 					isFalse(boost::get<Literal>(*forLoop.condition))
 				)
+				{
+					for (auto& stmt: forLoop.pre.statements)
+						visit(stmt);
 					return {{std::move(forLoop.pre.statements)}};
+				}
 			}
-			else
-				visit(_stmt);
+			visit(_stmt);
 			return {};
 		}
 	);
